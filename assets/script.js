@@ -31,16 +31,14 @@
     }
   } catch (e) { /* navigation privée : on continue sans mémoriser */ }
 
-  function fill(name, value) {
-    document.querySelectorAll('input[type="hidden"][name="' + name + '"]').forEach(function (el) {
-      el.value = value || '';
-    });
+  /* Origine lisible pour l'e-mail : l'artisan doit comprendre d'où vient le
+     contact sans rien connaître à Google Ads. */
+  function origine() {
+    if (src.gclid) return 'Annonce Google';
+    if (src.source) return src.source + (src.campagne ? ' · ' + src.campagne : '');
+    return document.referrer ? 'Lien depuis un autre site' : 'Visite directe';
   }
-  fill('gclid', src.gclid);
-  fill('source', src.source || (document.referrer ? 'referrer' : 'direct'));
-  fill('campagne', src.campagne);
-  fill('mot_cle', src.mot_cle);
-  fill('page', window.location.href);
+  var PAGE = document.body.getAttribute('data-page') || '';
 
   /* ---------- 2. Conversion Google Ads ---------- */
   /* Deux actions distinctes : ADS_CONVERSION (devis) et ADS_CONVERSION_APPEL. */
@@ -62,10 +60,18 @@
     });
   });
 
+  /* 0612345678, +33 6… → « 06 12 34 56 78 », lisible et cliquable dans l'e-mail. */
+  function telLisible(t) {
+    var d = t.replace(/\D/g, '');
+    if (d.indexOf('33') === 0 && d.length === 11) d = '0' + d.slice(2);
+    return d.length === 10 ? d.replace(/(\d{2})(?=\d)/g, '$1 ') : t;
+  }
+
   /* ---------- 4. Formulaires (haut de page et bas de page) ---------- */
   var started = false;
   document.querySelectorAll('form.js-devis').forEach(function (form) {
-    form.addEventListener('input', function () {
+    form.addEventListener('input', function (ev) {
+      if (ev.target.name === 'tel') ev.target.setCustomValidity('');
       if (started) return;
       started = true;
       dl.push({ event: 'form_start', form_location: LP });
@@ -80,6 +86,10 @@
       success.style.display = 'none';
       error.style.display = 'none';
 
+      var telEl = form.querySelector('[name="tel"]');
+      var chiffres = telEl.value.replace(/\D/g, '');
+      telEl.setCustomValidity(chiffres.length >= 10 ? '' :
+        'Indiquez un numéro complet (10 chiffres) pour être rappelé.');
       if (!form.checkValidity()) {
         form.reportValidity();
         return;
@@ -91,16 +101,35 @@
         return;
       }
 
-      var data = new FormData(form);
-      data.append('subject', 'Ent. CAPELLOT · nouvelle demande de devis (' + LP + ')');
-      data.append('from_name', 'Ent. CAPELLOT · landing ' + LP);
-      data.append('formulaire', form.id === 'devis-form' ? 'haut de page' : 'bas de page');
+      /* L'e-mail reçu par l'artisan : un objet qui dit tout, puis les champs
+         en français, dans l'ordre où on les lit. Rien de technique. */
+      function val(n) {
+        var el = form.querySelector('[name="' + n + '"]');
+        return el ? el.value.trim() : '';
+      }
+      var commune = val('ville');
+      var besoin = val('besoin');
+      var data = new FormData();
+      data.append('access_key', key);
+      data.append('botcheck', form.querySelector('[name="botcheck"]').checked ? '1' : '');
+      data.append('subject', 'Demande de devis · ' + (besoin || 'Toiture') + ' · ' + commune);
+      data.append('from_name', 'Site Ent. CAPELLOT');
+      data.append('Nom', val('nom'));
+      data.append('Téléphone', telLisible(val('tel')));
+      data.append('Commune', commune);
+      data.append('Besoin', besoin);
+      if (val('message')) data.append('Précisions', val('message'));
+      data.append('Page', PAGE);
+      data.append('Origine', origine());
+      if (src.gclid) data.append('Référence Google Ads', src.gclid);
 
       btn.disabled = true;
       var label = btn.textContent;
       btn.textContent = 'Envoi en cours…';
 
-      fetch('https://api.web3forms.com/submit', { method: 'POST', body: data })
+      fetch('https://api.web3forms.com/submit', {
+        method: 'POST', body: data, headers: { Accept: 'application/json' }
+      })
         .then(function (r) { return r.json(); })
         .then(function (json) {
           if (json.success) {
